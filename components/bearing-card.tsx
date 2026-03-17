@@ -19,6 +19,12 @@ import {
   Brush,
 } from "recharts";
 
+const DEFAULT_CHART_WINDOW_SIZE = 200;
+const CHART_WINDOW_SIZE = Math.max(
+  10,
+  Number(process.env.NEXT_PUBLIC_CHART_WINDOW_SIZE ?? DEFAULT_CHART_WINDOW_SIZE)
+);
+
 interface VibrationReading {
   id: string;
   bearing_id: string;
@@ -44,6 +50,9 @@ interface BearingCardProps {
   latestRul: number | null;
   rulReadings: RulReading[];
   vibrationReadings: VibrationReading[];
+  showFullHistory?: boolean;
+  rulBaseMultiplier?: number;
+  rulDecayPerBatch?: number;
 }
 
 export function BearingCard({
@@ -54,7 +63,23 @@ export function BearingCard({
   latestRul,
   rulReadings,
   vibrationReadings,
+  showFullHistory = false,
+  rulBaseMultiplier = 1,
+  rulDecayPerBatch = 0,
 }: BearingCardProps) {
+  const getMultiplierForBatchIndex = (batchIndex: number) =>
+    Math.max(0, rulBaseMultiplier - batchIndex * rulDecayPerBatch);
+
+  const applyRulMultiplier = (value: number | null, multiplier: number) => {
+    if (value === null || !Number.isFinite(multiplier)) return value;
+    return Math.min(100, Math.max(0, value * multiplier));
+  };
+
+  const adjustedLatestRul = applyRulMultiplier(
+    latestRul,
+    getMultiplierForBatchIndex(rulReadings.length)
+  );
+
   const getStatusConfig = (currentStatus: string, rul: number | null) => {
     if (rul !== null && rul < 20) {
       return {
@@ -84,7 +109,7 @@ export function BearingCard({
     };
   };
 
-  const statusConfig = getStatusConfig(status, latestRul);
+  const statusConfig = getStatusConfig(status, adjustedLatestRul);
   const StatusIcon = statusConfig.icon;
 
   const formatDate = (dateString: string | null) => {
@@ -96,6 +121,20 @@ export function BearingCard({
       year: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      second: "2-digit",
+    });
+  };
+
+  const formatDateTimeWithSeconds = (dateString: string | null | undefined) => {
+    if (!dateString) return "---";
+    const date = new Date(dateString);
+    return date.toLocaleString("es-ES", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
   };
 
@@ -109,44 +148,55 @@ export function BearingCard({
     return value.toFixed(3);
   };
 
-  const rulChartData = rulReadings
+  const rulChartData = [...rulReadings]
     .sort((a, b) => a.batch_number - b.batch_number)
-    .map((reading) => ({
-      batch: Number(reading.batch_number),
-      rul: reading.rul_percentage,
+    .map((reading, index) => ({
+      batch: index + 1,
+      realBatch: Number(reading.batch_number),
+      multiplier: getMultiplierForBatchIndex(index + 1),
+      rul: applyRulMultiplier(
+        reading.rul_percentage,
+        getMultiplierForBatchIndex(index + 1)
+      ),
+      createdAt: reading.created_at,
     }));
 
-  const vibrationChartData = vibrationReadings
+  const vibrationChartData = [...vibrationReadings]
     .sort((a, b) => a.batch_number - b.batch_number)
-    .map((reading) => ({
-      batch: Number(reading.batch_number),
+    .map((reading, index) => ({
+      batch: index + 1,
+      realBatch: Number(reading.batch_number),
       horizontal: Number(reading.vibration_horizontal),
-      vertical: Number(reading.vibration_vertical),
+      createdAt: reading.created_at,
     }))
-    .filter(
-      (reading) =>
-        Number.isFinite(reading.horizontal) || Number.isFinite(reading.vertical)
-    );
+    .filter((reading) => Number.isFinite(reading.horizontal));
+
+  const visibleRulChartData = showFullHistory
+    ? rulChartData
+    : rulChartData.slice(-CHART_WINDOW_SIZE);
+  const visibleVibrationChartData = showFullHistory
+    ? vibrationChartData
+    : vibrationChartData.slice(-CHART_WINDOW_SIZE);
 
   const getRulColor = () => {
-    if (latestRul !== null && latestRul < 20) return "#ef4444";
-    if (latestRul !== null && latestRul < 50) return "#f59e0b";
+    if (adjustedLatestRul !== null && adjustedLatestRul < 20) return "#ef4444";
+    if (adjustedLatestRul !== null && adjustedLatestRul < 50) return "#f59e0b";
     return "#10b981";
   };
 
   const pieData = [
-    { name: "RUL", value: latestRul ?? 0 },
-    { name: "Used", value: 100 - (latestRul ?? 0) },
+    { name: "RUL", value: adjustedLatestRul ?? 0 },
+    { name: "Used", value: 100 - (adjustedLatestRul ?? 0) },
   ];
 
   const brushStartIndexRul = 0;
   const brushStartIndexVibration = 0;
   const gradientId = `rul-gradient-${name.replace(/\s+/g, "-").toLowerCase()}`;
   const latestVibrationReading =
-    vibrationChartData[vibrationChartData.length - 1];
+    visibleVibrationChartData[visibleVibrationChartData.length - 1];
 
-  const vibrationValues = vibrationChartData
-    .flatMap((point) => [point.horizontal, point.vertical])
+  const vibrationValues = visibleVibrationChartData
+    .map((point) => point.horizontal)
     .filter((value) => Number.isFinite(value)) as number[];
   const vibrationMin = vibrationValues.length > 0 ? Math.min(...vibrationValues) : null;
   const vibrationMax = vibrationValues.length > 0 ? Math.max(...vibrationValues) : null;
@@ -204,7 +254,7 @@ export function BearingCard({
               </ResponsiveContainer>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className="text-xl font-bold tabular-nums leading-none">
-                  {formatRul(latestRul)}
+                  {formatRul(adjustedLatestRul)}
                 </span>
                 <span className="mt-0.5 text-[10px] text-muted-foreground">RUL</span>
               </div>
@@ -224,12 +274,6 @@ export function BearingCard({
                   {formatVibration(latestVibrationReading?.horizontal)}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-muted-foreground">Vib. Vertical</span>
-                <span className="font-semibold tabular-nums">
-                  {formatVibration(latestVibrationReading?.vertical)}
-                </span>
-              </div>
             </div>
 
             {/* Last Updated */}
@@ -245,16 +289,16 @@ export function BearingCard({
               Vibracion por Lote
               {vibrationChartData.length > 0 && (
                 <span className="ml-2 font-normal">
-                  ({vibrationChartData.length} lotes)
+                  ({visibleVibrationChartData.length} de {vibrationChartData.length} lotes)
                 </span>
               )}
             </p>
-            {vibrationChartData.length > 0 ? (
+            {visibleVibrationChartData.length > 0 ? (
               <div className="flex-1">
                 <div className="h-[180px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart
-                      data={vibrationChartData}
+                      data={visibleVibrationChartData}
                       margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
                     >
                       <XAxis
@@ -284,10 +328,15 @@ export function BearingCard({
                         }}
                         itemStyle={{ color: "#ffffff" }}
                         labelStyle={{ color: "#ffffff" }}
-                        labelFormatter={(label) => `Lote #${label}`}
+                        labelFormatter={(label, payload) => {
+                          const firstItem = payload?.[0]?.payload as
+                            | { createdAt?: string; realBatch?: number }
+                            | undefined;
+                          return `Lote #${label} (real #${firstItem?.realBatch ?? "---"}) - ${formatDateTimeWithSeconds(firstItem?.createdAt)}`;
+                        }}
                         formatter={(value: number | null | undefined, name) => [
                           formatVibration(value),
-                          name === "horizontal" ? "Vib. Horizontal" : "Vib. Vertical",
+                          "Vib. Horizontal",
                         ]}
                       />
                       <Line
@@ -298,33 +347,25 @@ export function BearingCard({
                         strokeWidth={2}
                         dot={false}
                         activeDot={{ r: 3, strokeWidth: 0 }}
-                        isAnimationActive={false}
+                        isAnimationActive
+                        animationDuration={700}
+                        animationEasing="ease-out"
                       />
-                      <Line
-                        type="monotone"
-                        dataKey="vertical"
-                        connectNulls
-                        stroke="var(--color-chart-2)"
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 3, strokeWidth: 0 }}
-                        isAnimationActive={false}
-                      />
-                      {vibrationChartData.length > 200 && (
+                      {visibleVibrationChartData.length > 200 && (
                         <Brush
                           dataKey="batch"
                           height={22}
                           stroke="hsl(var(--border))"
                           fill="hsl(var(--muted))"
                           startIndex={brushStartIndexVibration}
-                          endIndex={vibrationChartData.length - 1}
+                          endIndex={visibleVibrationChartData.length - 1}
                           tickFormatter={(value) => `#${value}`}
                         />
                       )}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
-                {vibrationChartData.length > 200 && (
+                {visibleVibrationChartData.length > 200 && (
                   <p className="mt-1 text-center text-[10px] text-muted-foreground">
                     Arrastra el selector para navegar por los lotes
                   </p>
@@ -340,16 +381,16 @@ export function BearingCard({
               Tendencia RUL por Lote
               {rulChartData.length > 0 && (
                 <span className="ml-2 font-normal">
-                  ({rulChartData.length} lotes)
+                  ({visibleRulChartData.length} de {rulChartData.length} lotes)
                 </span>
               )}
             </p>
-            {rulChartData.length > 0 ? (
+            {visibleRulChartData.length > 0 ? (
               <div className="flex-1">
                 <div className="h-[180px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart
-                      data={rulChartData}
+                      data={visibleRulChartData}
                       margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
                     >
                       <defs>
@@ -386,8 +427,23 @@ export function BearingCard({
                         }}
                         itemStyle={{ color: "#ffffff" }}
                         labelStyle={{ color: "#ffffff" }}
-                        labelFormatter={(label) => `Lote #${label}`}
-                        formatter={(value: number) => [`${Number(value).toFixed(1)}%`, "RUL"]}
+                        labelFormatter={(label, payload) => {
+                          const firstItem = payload?.[0]?.payload as
+                            | { createdAt?: string; realBatch?: number }
+                            | undefined;
+                          return `Lote #${label} (real #${firstItem?.realBatch ?? "---"}) - ${formatDateTimeWithSeconds(firstItem?.createdAt)}`;
+                        }}
+                        formatter={(value: number, _name, item) => {
+                          const payload = item?.payload as
+                            | { multiplier?: number }
+                            | undefined;
+                          const multiplier = payload?.multiplier;
+                          const seriesName =
+                            typeof multiplier === "number"
+                              ? `RUL (x${multiplier.toFixed(4)})`
+                              : "RUL";
+                          return [`${Number(value).toFixed(1)}%`, seriesName];
+                        }}
                       />
                       <ReferenceLine y={20} stroke="#ef4444" strokeDasharray="4 4" strokeOpacity={0.5} />
                       <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" strokeOpacity={0.5} />
@@ -400,22 +456,25 @@ export function BearingCard({
                         fill={`url(#${gradientId})`}
                         dot={false}
                         activeDot={{ r: 3, strokeWidth: 0 }}
+                        isAnimationActive
+                        animationDuration={700}
+                        animationEasing="ease-out"
                       />
-                      {rulChartData.length > 200 && (
+                      {visibleRulChartData.length > 200 && (
                         <Brush
                           dataKey="batch"
                           height={22}
                           stroke="hsl(var(--border))"
                           fill="hsl(var(--muted))"
                           startIndex={brushStartIndexRul}
-                          endIndex={rulChartData.length - 1}
+                          endIndex={visibleRulChartData.length - 1}
                           tickFormatter={(value) => `#${value}`}
                         />
                       )}
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
-                {rulChartData.length > 200 && (
+                {visibleRulChartData.length > 200 && (
                   <p className="mt-1 text-center text-[10px] text-muted-foreground">
                     Arrastra el selector para navegar por los lotes
                   </p>

@@ -1,6 +1,42 @@
 import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
+const PAGE_SIZE = 1000;
+
+async function fetchAllReadingsByBearing(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  table: "rul_readings" | "vibration_readings",
+  bearingId: string
+) {
+  const allRows: Record<string, unknown>[] = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from(table)
+      .select("*")
+      .eq("bearing_id", bearingId)
+      .order("batch_number", { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      return { data: null, error };
+    }
+
+    const rows = data ?? [];
+    allRows.push(...rows);
+
+    if (rows.length < PAGE_SIZE) {
+      break;
+    }
+
+    from += PAGE_SIZE;
+  }
+
+  return { data: allRows, error: null };
+}
+
 export async function GET() {
   const supabase = await createClient();
 
@@ -17,19 +53,15 @@ export async function GET() {
   // Get RUL + vibration history for each bearing (latest readings)
   const bearingsWithHistory = await Promise.all(
     bearings.map(async (bearing) => {
-      const { data: rulReadings, error: rulReadingsError } = await supabase
-        .from("rul_readings")
-        .select("*")
-        .eq("bearing_id", bearing.id)
-        .order("batch_number", { ascending: false })
-        .limit(10000);
+      const {
+        data: rulReadingsRaw,
+        error: rulReadingsError,
+      } = await fetchAllReadingsByBearing(supabase, "rul_readings", bearing.id);
 
-      const { data: vibrationReadings, error: vibrationReadingsError } = await supabase
-        .from("vibration_readings")
-        .select("*")
-        .eq("bearing_id", bearing.id)
-        .order("batch_number", { ascending: false })
-        .limit(10000);
+      const {
+        data: vibrationReadingsRaw,
+        error: vibrationReadingsError,
+      } = await fetchAllReadingsByBearing(supabase, "vibration_readings", bearing.id);
 
       if (rulReadingsError || vibrationReadingsError) {
         return {
@@ -40,6 +72,22 @@ export async function GET() {
           lastUpdated: null,
         };
       }
+
+      const rulReadings = (rulReadingsRaw ?? []) as {
+        id: string;
+        bearing_id: string;
+        batch_number: number;
+        rul_percentage: number;
+        created_at: string;
+      }[];
+      const vibrationReadings = (vibrationReadingsRaw ?? []) as {
+        id: string;
+        bearing_id: string;
+        batch_number: number;
+        vibration_horizontal: number;
+        vibration_vertical: number;
+        created_at: string;
+      }[];
 
       // Latest readings are the first ones (descending order)
       const latestRulReading = rulReadings.length > 0 ? rulReadings[0] : null;

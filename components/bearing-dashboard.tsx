@@ -1,20 +1,35 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { BearingCard } from "./bearing-card";
 import { RefreshCw, Activity, AlertTriangle, Clock } from "lucide-react";
 import { ThemeToggle } from "./theme-toggle";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const DEFAULT_BATCH_STEP = 100;
+const DEMO_BATCH_STEP = Math.max(
+  1,
+  Number(process.env.NEXT_PUBLIC_DEMO_BATCH_STEP ?? DEFAULT_BATCH_STEP)
+);
+const DEMO_BATCH_INTERVAL_MS = Math.max(
+  1000,
+  Number(process.env.NEXT_PUBLIC_DEMO_BATCH_INTERVAL_MS ?? 5000)
+);
+const RUL_BASE_MULTIPLIER = Number(process.env.NEXT_PUBLIC_RUL_MULTIPLIER ?? 1);
+const RUL_MULTIPLIER_DECAY_PER_BATCH = Number(
+  process.env.NEXT_PUBLIC_RUL_MULTIPLIER_DECAY_PER_BATCH ?? 0
+);
 
 interface Reading {
   id: string;
   bearing_id: string;
   batch_number: number;
-  vibracion_horizontal: number;
-  vibracion_vertical: number;
+  vibration_horizontal: number;
+  vibration_vertical: number;
   created_at: string;
 }
 
@@ -43,14 +58,81 @@ interface BearingsResponse {
 }
 
 export function BearingDashboard() {
+  const [visibleBatches, setVisibleBatches] = useState(0);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+  const getMultiplierForBatchIndex = (batchIndex: number) =>
+    Math.max(0, RUL_BASE_MULTIPLIER - batchIndex * RUL_MULTIPLIER_DECAY_PER_BATCH);
+
+  const applyRulMultiplier = (value: number | null, multiplier: number) => {
+    if (value === null || !Number.isFinite(multiplier)) return value;
+    return Math.min(100, Math.max(0, value * multiplier));
+  };
+
   const { data, error, isLoading, isValidating } = useSWR<BearingsResponse>(
     "/api/bearings",
     fetcher,
     {
-      refreshInterval: 10000, // Refresh every 10 seconds
+      refreshInterval: DEMO_BATCH_INTERVAL_MS,
       revalidateOnFocus: true,
+      onSuccess: (nextData) => {
+        const maxAvailableBatches = Math.max(
+          ...nextData.bearings.map((bearing) => bearing.vibrationReadings.length),
+          0
+        );
+
+        if (maxAvailableBatches <= 0) {
+          setVisibleBatches(0);
+          return;
+        }
+
+        setVisibleBatches((previous) => {
+          const next = previous + DEMO_BATCH_STEP;
+          return ((next - 1) % maxAvailableBatches) + 1;
+        });
+      },
     }
   );
+
+  const visibleBearings = useMemo(() => {
+    if (!data?.bearings) return [];
+
+    return data.bearings.map((bearing) => {
+      const targetBatchCount = showFullHistory
+        ? bearing.vibrationReadings.length
+        : visibleBatches;
+      const vibrationReadings = bearing.vibrationReadings.slice(0, targetBatchCount);
+      const rulReadings = bearing.rulReadings.slice(0, vibrationReadings.length);
+
+      const latestVisibleRulReading =
+        rulReadings.length > 0 ? rulReadings[rulReadings.length - 1] : null;
+      const latestVisibleVibrationReading =
+        vibrationReadings.length > 0
+          ? vibrationReadings[vibrationReadings.length - 1]
+          : null;
+
+      const lastUpdatedCandidates = [
+        latestVisibleRulReading?.created_at,
+        latestVisibleVibrationReading?.created_at,
+      ].filter(Boolean) as string[];
+
+      const latestDataTimestamp =
+        lastUpdatedCandidates.length > 0
+          ? lastUpdatedCandidates.sort().at(-1) ?? null
+          : null;
+
+      // For demo purposes, show the live refresh timestamp per card so it is
+      // visibly updated on every auto-refresh tick.
+      const lastUpdated = data.fetchedAt ?? latestDataTimestamp;
+
+      return {
+        ...bearing,
+        rulReadings,
+        vibrationReadings,
+        latestRul: latestVisibleRulReading?.rul_percentage ?? null,
+        lastUpdated,
+      };
+    });
+  }, [data?.bearings, showFullHistory, visibleBatches]);
 
   const formatLastFetch = (dateString?: string) => {
     if (!dateString) return "";
@@ -62,11 +144,25 @@ export function BearingDashboard() {
     });
   };
 
+  const getAdjustedLatestRul = (value: number | null, visibleCount: number) =>
+    applyRulMultiplier(value, getMultiplierForBatchIndex(visibleCount));
+
   const stats = {
-    total: data?.bearings.length ?? 0,
-    critical: data?.bearings.filter((b) => b.latestRul !== null && b.latestRul < 20).length ?? 0,
-    warning: data?.bearings.filter((b) => b.latestRul !== null && b.latestRul >= 20 && b.latestRul < 50).length ?? 0,
-    normal: data?.bearings.filter((b) => b.latestRul !== null && b.latestRul >= 50).length ?? 0,
+    total: visibleBearings.length,
+    critical: visibleBearings.filter((b) => {
+      const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
+      return rul !== null && rul < 20;
+    }).length,
+    warning: visibleBearings.filter(
+      (b) => {
+        const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
+        return rul !== null && rul >= 20 && rul < 50;
+      }
+    ).length,
+    normal: visibleBearings.filter((b) => {
+      const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
+      return rul !== null && rul >= 50;
+    }).length,
   };
 
   if (error) {
@@ -94,6 +190,19 @@ export function BearingDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Button
+            variant={showFullHistory ? "default" : "outline"}
+            size="sm"
+            onClick={() => setShowFullHistory((previous) => !previous)}
+          >
+            {showFullHistory ? "Volver a Demo" : "Ver Todo"}
+          </Button>
+          <Badge
+            variant="outline"
+            className="flex items-center gap-2 px-3 py-1.5 text-xs"
+          >
+            {showFullHistory ? "Historico completo" : `Lotes visibles: ${visibleBatches}`}
+          </Badge>
           <Badge
             variant="outline"
             className="flex items-center gap-2 px-3 py-1.5"
@@ -102,7 +211,9 @@ export function BearingDashboard() {
               className={`h-3.5 w-3.5 ${isValidating ? "animate-spin" : ""}`}
             />
             <span className="text-xs">
-              {isValidating ? "Actualizando..." : "Auto-refresh: 10s"}
+              {isValidating
+                ? "Actualizando..."
+                : `Auto-refresh: ${Math.round(DEMO_BATCH_INTERVAL_MS / 1000)}s`}
             </span>
           </Badge>
           {data?.fetchedAt && (
@@ -182,11 +293,11 @@ export function BearingDashboard() {
       )}
 
       {/* Bearing Cards */}
-      {data?.bearings && (
+      {visibleBearings.length > 0 && (
         <div>
           <h2 className="mb-4 text-lg font-semibold">Detalle por Rodamiento</h2>
           <div className="grid gap-4 grid-cols-1">
-            {[...data.bearings]
+            {[...visibleBearings]
               .sort((a, b) => (a.latestRul ?? Infinity) - (b.latestRul ?? Infinity))
               .map((bearing) => (
               <BearingCard
@@ -198,6 +309,9 @@ export function BearingDashboard() {
                 rulReadings={bearing.rulReadings}
                 vibrationReadings={bearing.vibrationReadings}
                 latestRul={bearing.latestRul}
+                showFullHistory={showFullHistory}
+                rulBaseMultiplier={RUL_BASE_MULTIPLIER}
+                rulDecayPerBatch={RUL_MULTIPLIER_DECAY_PER_BATCH}
               />
             ))}
           </div>
