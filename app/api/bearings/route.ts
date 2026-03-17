@@ -6,7 +6,8 @@ const PAGE_SIZE = 1000;
 async function fetchAllReadingsByBearing(
   supabase: Awaited<ReturnType<typeof createClient>>,
   table: "rul_readings" | "vibration_readings",
-  bearingId: string
+  bearingId: string,
+  orderColumn: "batch_number" | "created_at"
 ) {
   const allRows: Record<string, unknown>[] = [];
   let from = 0;
@@ -17,7 +18,7 @@ async function fetchAllReadingsByBearing(
       .from(table)
       .select("*")
       .eq("bearing_id", bearingId)
-      .order("batch_number", { ascending: false })
+      .order(orderColumn, { ascending: false })
       .range(from, to);
 
     if (error) {
@@ -56,22 +57,22 @@ export async function GET() {
       const {
         data: rulReadingsRaw,
         error: rulReadingsError,
-      } = await fetchAllReadingsByBearing(supabase, "rul_readings", bearing.id);
+      } = await fetchAllReadingsByBearing(
+        supabase,
+        "rul_readings",
+        bearing.id,
+        "batch_number"
+      );
 
       const {
         data: vibrationReadingsRaw,
         error: vibrationReadingsError,
-      } = await fetchAllReadingsByBearing(supabase, "vibration_readings", bearing.id);
-
-      if (rulReadingsError || vibrationReadingsError) {
-        return {
-          ...bearing,
-          rulReadings: [],
-          vibrationReadings: [],
-          latestRul: null,
-          lastUpdated: null,
-        };
-      }
+      } = await fetchAllReadingsByBearing(
+        supabase,
+        "vibration_readings",
+        bearing.id,
+        "batch_number"
+      );
 
       const rulReadings = (rulReadingsRaw ?? []) as {
         id: string;
@@ -85,18 +86,32 @@ export async function GET() {
         bearing_id: string;
         batch_number: number;
         vibration_horizontal: number;
-        vibration_vertical: number;
         created_at: string;
       }[];
 
+      if (rulReadingsError && vibrationReadingsError) {
+        return {
+          ...bearing,
+          rulReadings: [],
+          vibrationReadings: [],
+          latestRul: null,
+          lastUpdated: null,
+        };
+      }
+
       // Latest readings are the first ones (descending order)
-      const latestRulReading = rulReadings.length > 0 ? rulReadings[0] : null;
+      const latestRulReading =
+        !rulReadingsError && rulReadings.length > 0 ? rulReadings[0] : null;
       const latestVibrationReading =
-        vibrationReadings.length > 0 ? vibrationReadings[0] : null;
+        !vibrationReadingsError && vibrationReadings.length > 0
+          ? vibrationReadings[0]
+          : null;
 
       // Reverse to get ascending order for chart display
-      const sortedRulReadings = [...rulReadings].reverse();
-      const sortedVibrationReadings = [...vibrationReadings].reverse();
+      const sortedRulReadings = rulReadingsError ? [] : [...rulReadings].reverse();
+      const sortedVibrationReadings = vibrationReadingsError
+        ? []
+        : [...vibrationReadings].reverse();
 
       const lastUpdatedCandidates = [
         latestRulReading?.created_at,

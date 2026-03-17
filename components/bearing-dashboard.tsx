@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import { BearingCard } from "./bearing-card";
 import { RefreshCw, Activity, AlertTriangle, Clock } from "lucide-react";
@@ -19,6 +19,10 @@ const DEMO_BATCH_INTERVAL_MS = Math.max(
   1000,
   Number(process.env.NEXT_PUBLIC_DEMO_BATCH_INTERVAL_MS ?? 5000)
 );
+const DEMO_START_BATCH = Math.max(
+  1,
+  Number(process.env.NEXT_PUBLIC_DEMO_START_BATCH ?? 1)
+);
 const RUL_BASE_MULTIPLIER = Number(process.env.NEXT_PUBLIC_RUL_MULTIPLIER ?? 1);
 const RUL_MULTIPLIER_DECAY_PER_BATCH = Number(
   process.env.NEXT_PUBLIC_RUL_MULTIPLIER_DECAY_PER_BATCH ?? 0
@@ -29,7 +33,6 @@ interface Reading {
   bearing_id: string;
   batch_number: number;
   vibration_horizontal: number;
-  vibration_vertical: number;
   created_at: string;
 }
 
@@ -58,8 +61,9 @@ interface BearingsResponse {
 }
 
 export function BearingDashboard() {
-  const [visibleBatches, setVisibleBatches] = useState(0);
+  const [visibleBatches, setVisibleBatches] = useState(DEMO_START_BATCH);
   const [showFullHistory, setShowFullHistory] = useState(false);
+  const hasInitializedStartBatch = useRef(false);
   const getMultiplierForBatchIndex = (batchIndex: number) =>
     Math.max(0, RUL_BASE_MULTIPLIER - batchIndex * RUL_MULTIPLIER_DECAY_PER_BATCH);
 
@@ -76,7 +80,9 @@ export function BearingDashboard() {
       revalidateOnFocus: true,
       onSuccess: (nextData) => {
         const maxAvailableBatches = Math.max(
-          ...nextData.bearings.map((bearing) => bearing.vibrationReadings.length),
+          ...nextData.bearings.map((bearing) =>
+            Math.max(bearing.vibrationReadings.length, bearing.rulReadings.length)
+          ),
           0
         );
 
@@ -85,9 +91,15 @@ export function BearingDashboard() {
           return;
         }
 
+        if (!hasInitializedStartBatch.current) {
+          setVisibleBatches(Math.min(DEMO_START_BATCH, maxAvailableBatches));
+          hasInitializedStartBatch.current = true;
+          return;
+        }
+
         setVisibleBatches((previous) => {
           const next = previous + DEMO_BATCH_STEP;
-          return ((next - 1) % maxAvailableBatches) + 1;
+          return Math.min(next, maxAvailableBatches);
         });
       },
     }
@@ -97,11 +109,13 @@ export function BearingDashboard() {
     if (!data?.bearings) return [];
 
     return data.bearings.map((bearing) => {
+      const vibrationAvailable = bearing.vibrationReadings.length;
+      const rulAvailable = bearing.rulReadings.length;
       const targetBatchCount = showFullHistory
-        ? bearing.vibrationReadings.length
+        ? Math.max(vibrationAvailable, rulAvailable)
         : visibleBatches;
       const vibrationReadings = bearing.vibrationReadings.slice(0, targetBatchCount);
-      const rulReadings = bearing.rulReadings.slice(0, vibrationReadings.length);
+      const rulReadings = bearing.rulReadings.slice(0, targetBatchCount);
 
       const latestVisibleRulReading =
         rulReadings.length > 0 ? rulReadings[rulReadings.length - 1] : null;
@@ -199,12 +213,6 @@ export function BearingDashboard() {
           </Button>
           <Badge
             variant="outline"
-            className="flex items-center gap-2 px-3 py-1.5 text-xs"
-          >
-            {showFullHistory ? "Historico completo" : `Lotes visibles: ${visibleBatches}`}
-          </Badge>
-          <Badge
-            variant="outline"
             className="flex items-center gap-2 px-3 py-1.5"
           >
             <RefreshCw
@@ -298,7 +306,6 @@ export function BearingDashboard() {
           <h2 className="mb-4 text-lg font-semibold">Detalle por Rodamiento</h2>
           <div className="grid gap-4 grid-cols-1">
             {[...visibleBearings]
-              .sort((a, b) => (a.latestRul ?? Infinity) - (b.latestRul ?? Infinity))
               .map((bearing) => (
               <BearingCard
                 key={bearing.id}

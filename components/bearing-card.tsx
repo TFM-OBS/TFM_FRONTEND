@@ -30,7 +30,6 @@ interface VibrationReading {
   bearing_id: string;
   batch_number: number;
   vibration_horizontal: number;
-  vibration_vertical: number;
   created_at: string;
 }
 
@@ -178,10 +177,27 @@ export function BearingCard({
     ? vibrationChartData
     : vibrationChartData.slice(-CHART_WINDOW_SIZE);
 
+  const horizontalMeanBaseline =
+    visibleVibrationChartData.length > 0
+      ? visibleVibrationChartData.reduce((acc, point) => acc + point.horizontal, 0) /
+        visibleVibrationChartData.length
+      : 0;
+
+  const oscillationChartData = visibleVibrationChartData.map((point) => ({
+    ...point,
+    horizontalOscillation: point.horizontal - horizontalMeanBaseline,
+  }));
+
   const getRulColor = () => {
     if (adjustedLatestRul !== null && adjustedLatestRul < 20) return "#ef4444";
     if (adjustedLatestRul !== null && adjustedLatestRul < 50) return "#f59e0b";
     return "#10b981";
+  };
+
+  const getRulState = (value: number) => {
+    if (value < 20) return "critical";
+    if (value < 50) return "warning";
+    return "normal";
   };
 
   const pieData = [
@@ -191,32 +207,42 @@ export function BearingCard({
 
   const brushStartIndexRul = 0;
   const brushStartIndexVibration = 0;
-  const gradientId = `rul-gradient-${name.replace(/\s+/g, "-").toLowerCase()}`;
   const latestVibrationReading =
     visibleVibrationChartData[visibleVibrationChartData.length - 1];
+  const latestRulChartPoint = visibleRulChartData[visibleRulChartData.length - 1];
+  const latestVisibleBatch =
+    latestVibrationReading?.batch ?? latestRulChartPoint?.batch ?? null;
 
-  const vibrationValues = visibleVibrationChartData
-    .map((point) => point.horizontal)
+  const vibrationValues = oscillationChartData
+    .map((point) => point.horizontalOscillation)
     .filter((value) => Number.isFinite(value)) as number[];
-  const vibrationMin = vibrationValues.length > 0 ? Math.min(...vibrationValues) : null;
-  const vibrationMax = vibrationValues.length > 0 ? Math.max(...vibrationValues) : null;
-  const vibrationPadding =
-    vibrationMin !== null && vibrationMax !== null
-      ? Math.max((vibrationMax - vibrationMin) * 0.1, 0.1)
-      : null;
-  const vibrationDomain =
-    vibrationMin !== null && vibrationMax !== null && vibrationPadding !== null
-      ? [vibrationMin - vibrationPadding, vibrationMax + vibrationPadding]
-      : undefined;
+  const sortedAbsVibrationValues = vibrationValues
+    .map((value) => Math.abs(value))
+    .sort((a, b) => a - b);
+  const p95Index =
+    sortedAbsVibrationValues.length > 0
+      ? Math.floor((sortedAbsVibrationValues.length - 1) * 0.95)
+      : 0;
+  const robustMaxAbs =
+    sortedAbsVibrationValues.length > 0 ? sortedAbsVibrationValues[p95Index] : 0;
+  const domainLimit = Math.max(robustMaxAbs * 1.15, 0.01);
+  const vibrationDomain: [number, number] = [-domainLimit, domainLimit];
 
+  const rulChartByStateData = visibleRulChartData.map((point) => {
+    const state = getRulState(point.rul);
+    return {
+      ...point,
+      rulNormal: state === "normal" ? point.rul : null,
+      rulWarning: state === "warning" ? point.rul : null,
+      rulCritical: state === "critical" ? point.rul : null,
+    };
+  });
 
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-0">
         <div className="flex flex-col lg:flex-row">
-          {/* Left Panel - Info */}
           <div className="flex flex-col items-center gap-4 border-b p-5 lg:w-[240px] lg:flex-shrink-0 lg:border-b-0 lg:border-r">
-            {/* Header */}
             <div className="flex w-full flex-col gap-2">
               <div className="flex items-start justify-between gap-2">
                 <h3 className="text-base font-semibold leading-tight">{name}</h3>
@@ -231,7 +257,6 @@ export function BearingCard({
               </div>
             </div>
 
-            {/* RUL Gauge */}
             <div className="relative h-[110px] w-[110px] flex-shrink-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -260,12 +285,11 @@ export function BearingCard({
               </div>
             </div>
 
-            {/* Latest Vibration Values */}
             <div className="flex w-full flex-col gap-2 rounded-md border bg-muted/30 p-3 text-xs">
               <div className="flex items-center justify-between">
                 <span className="text-muted-foreground">Ultimo Lote</span>
                 <span className="font-semibold tabular-nums">
-                  {latestVibrationReading ? `#${latestVibrationReading.batch}` : "---"}
+                  {latestVisibleBatch !== null ? `#${latestVisibleBatch}` : "---"}
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -276,17 +300,15 @@ export function BearingCard({
               </div>
             </div>
 
-            {/* Last Updated */}
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
               <Clock className="h-3 w-3 flex-shrink-0" />
               <span>{formatDate(lastUpdated)}</span>
             </div>
           </div>
 
-          {/* Right Panel - Trend Charts */}
           <div className="flex min-w-0 flex-1 flex-col p-4">
             <p className="mb-2 text-xs font-medium text-muted-foreground">
-              Vibracion por Lote
+              Oscilacion de Vibracion Horizontal
               {vibrationChartData.length > 0 && (
                 <span className="ml-2 font-normal">
                   ({visibleVibrationChartData.length} de {vibrationChartData.length} lotes)
@@ -298,7 +320,7 @@ export function BearingCard({
                 <div className="h-[180px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart
-                      data={visibleVibrationChartData}
+                      data={oscillationChartData}
                       margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
                     >
                       <XAxis
@@ -315,7 +337,7 @@ export function BearingCard({
                         tick={{ fontSize: 10 }}
                         tickLine={false}
                         axisLine={false}
-                        tickFormatter={(value) => Number(value).toFixed(2)}
+                        tickFormatter={(value) => Number(value).toFixed(3)}
                       />
                       <Tooltip
                         contentStyle={{
@@ -334,14 +356,20 @@ export function BearingCard({
                             | undefined;
                           return `Lote #${label} (real #${firstItem?.realBatch ?? "---"}) - ${formatDateTimeWithSeconds(firstItem?.createdAt)}`;
                         }}
-                        formatter={(value: number | null | undefined, name) => [
+                        formatter={(value: number | null | undefined) => [
                           formatVibration(value),
-                          "Vib. Horizontal",
+                          "Oscilacion H",
                         ]}
                       />
+                      <ReferenceLine
+                        y={0}
+                        stroke="hsl(var(--muted-foreground))"
+                        strokeDasharray="4 4"
+                        strokeOpacity={0.5}
+                      />
                       <Line
-                        type="monotone"
-                        dataKey="horizontal"
+                        type="linear"
+                        dataKey="horizontalOscillation"
                         connectNulls
                         stroke="var(--color-chart-1)"
                         strokeWidth={2}
@@ -390,15 +418,9 @@ export function BearingCard({
                 <div className="h-[180px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart
-                      data={visibleRulChartData}
+                      data={rulChartByStateData}
                       margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
                     >
-                      <defs>
-                        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={getRulColor()} stopOpacity={0.3} />
-                          <stop offset="95%" stopColor={getRulColor()} stopOpacity={0.02} />
-                        </linearGradient>
-                      </defs>
                       <XAxis
                         dataKey="batch"
                         type="number"
@@ -445,15 +467,42 @@ export function BearingCard({
                           return [`${Number(value).toFixed(1)}%`, seriesName];
                         }}
                       />
-                      <ReferenceLine y={20} stroke="#ef4444" strokeDasharray="4 4" strokeOpacity={0.5} />
-                      <ReferenceLine y={50} stroke="#f59e0b" strokeDasharray="4 4" strokeOpacity={0.5} />
                       <Area
                         type="monotone"
-                        dataKey="rul"
-                        connectNulls
-                        stroke={getRulColor()}
+                        dataKey="rulNormal"
+                        connectNulls={false}
+                        stroke="#10b981"
                         strokeWidth={1.5}
-                        fill={`url(#${gradientId})`}
+                        fill="rgba(16, 185, 129, 0.18)"
+                        name="RUL"
+                        dot={false}
+                        activeDot={{ r: 3, strokeWidth: 0 }}
+                        isAnimationActive
+                        animationDuration={700}
+                        animationEasing="ease-out"
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="rulWarning"
+                        connectNulls={false}
+                        stroke="#f59e0b"
+                        strokeWidth={1.5}
+                        fill="rgba(245, 158, 11, 0.18)"
+                        name="RUL"
+                        dot={false}
+                        activeDot={{ r: 3, strokeWidth: 0 }}
+                        isAnimationActive
+                        animationDuration={700}
+                        animationEasing="ease-out"
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="rulCritical"
+                        connectNulls={false}
+                        stroke="#ef4444"
+                        strokeWidth={1.5}
+                        fill="rgba(239, 68, 68, 0.18)"
+                        name="RUL"
                         dot={false}
                         activeDot={{ r: 3, strokeWidth: 0 }}
                         isAnimationActive
