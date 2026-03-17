@@ -60,9 +60,12 @@ interface BearingsResponse {
   fetchedAt: string;
 }
 
+type BearingFilterState = "all" | "normal" | "warning" | "critical";
+
 export function BearingDashboard() {
   const [visibleBatches, setVisibleBatches] = useState(DEMO_START_BATCH);
   const [showFullHistory, setShowFullHistory] = useState(false);
+  const [stateFilter, setStateFilter] = useState<BearingFilterState>("all");
   const hasInitializedStartBatch = useRef(false);
   const getMultiplierForBatchIndex = (batchIndex: number) =>
     Math.max(0, RUL_BASE_MULTIPLIER - batchIndex * RUL_MULTIPLIER_DECAY_PER_BATCH);
@@ -161,23 +164,52 @@ export function BearingDashboard() {
   const getAdjustedLatestRul = (value: number | null, visibleCount: number) =>
     applyRulMultiplier(value, getMultiplierForBatchIndex(visibleCount));
 
-  const stats = {
-    total: visibleBearings.length,
-    critical: visibleBearings.filter((b) => {
-      const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
-      return rul !== null && rul < 20;
-    }).length,
-    warning: visibleBearings.filter(
-      (b) => {
-        const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
-        return rul !== null && rul >= 20 && rul < 50;
-      }
-    ).length,
-    normal: visibleBearings.filter((b) => {
-      const rul = getAdjustedLatestRul(b.latestRul, b.rulReadings.length);
-      return rul !== null && rul >= 50;
-    }).length,
+  const getBearingRulState = (bearing: Pick<Bearing, "latestRul" | "rulReadings">) => {
+    const rul = getAdjustedLatestRul(bearing.latestRul, bearing.rulReadings.length);
+    if (rul === null) return null;
+    if (rul < 20) return "critical";
+    if (rul < 50) return "warning";
+    return "normal";
   };
+
+  const stats = useMemo(() => {
+    return visibleBearings.reduce(
+      (acc, bearing) => {
+        const state = getBearingRulState(bearing);
+        if (state === "critical") acc.critical += 1;
+        if (state === "warning") acc.warning += 1;
+        if (state === "normal") acc.normal += 1;
+        return acc;
+      },
+      {
+        total: visibleBearings.length,
+        critical: 0,
+        warning: 0,
+        normal: 0,
+      }
+    );
+  }, [visibleBearings]);
+
+  const filteredBearings = useMemo(() => {
+    if (stateFilter === "all") return visibleBearings;
+    return visibleBearings.filter((bearing) => getBearingRulState(bearing) === stateFilter);
+  }, [visibleBearings, stateFilter]);
+
+  const toggleStateFilter = (nextFilter: BearingFilterState) => {
+    setStateFilter((previous) => {
+      if (nextFilter === "all") return "all";
+      return previous === nextFilter ? "all" : nextFilter;
+    });
+  };
+
+  const filterLabel =
+    stateFilter === "all"
+      ? "Todos"
+      : stateFilter === "normal"
+      ? "Normal"
+      : stateFilter === "warning"
+      ? "Advertencia"
+      : "Critico";
 
   if (error) {
     return (
@@ -236,7 +268,12 @@ export function BearingDashboard() {
 
       {/* Summary Stats */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card
+          className={`cursor-pointer transition-colors ${
+            stateFilter === "all" ? "border-primary/60 bg-primary/5" : "hover:bg-muted/40"
+          }`}
+          onClick={() => toggleStateFilter("all")}
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Total Rodamientos</CardTitle>
             <Activity className="h-4 w-4 text-muted-foreground" />
@@ -245,7 +282,14 @@ export function BearingDashboard() {
             <div className="text-2xl font-bold">{stats.total}</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card
+          className={`cursor-pointer transition-colors ${
+            stateFilter === "normal"
+              ? "border-emerald-500/60 bg-emerald-500/5"
+              : "hover:bg-muted/40"
+          }`}
+          onClick={() => toggleStateFilter("normal")}
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Estado Normal</CardTitle>
             <div className="h-3 w-3 rounded-full bg-emerald-500" />
@@ -254,7 +298,14 @@ export function BearingDashboard() {
             <div className="text-2xl font-bold text-emerald-600">{stats.normal}</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card
+          className={`cursor-pointer transition-colors ${
+            stateFilter === "warning"
+              ? "border-amber-500/60 bg-amber-500/5"
+              : "hover:bg-muted/40"
+          }`}
+          onClick={() => toggleStateFilter("warning")}
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Advertencia</CardTitle>
             <div className="h-3 w-3 rounded-full bg-amber-500" />
@@ -263,7 +314,14 @@ export function BearingDashboard() {
             <div className="text-2xl font-bold text-amber-600">{stats.warning}</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card
+          className={`cursor-pointer transition-colors ${
+            stateFilter === "critical"
+              ? "border-red-500/60 bg-red-500/5"
+              : "hover:bg-muted/40"
+          }`}
+          onClick={() => toggleStateFilter("critical")}
+        >
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">Critico</CardTitle>
             <div className="h-3 w-3 rounded-full bg-red-500" />
@@ -303,10 +361,14 @@ export function BearingDashboard() {
       {/* Bearing Cards */}
       {visibleBearings.length > 0 && (
         <div>
-          <h2 className="mb-4 text-lg font-semibold">Detalle por Rodamiento</h2>
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Detalle por Rodamiento</h2>
+            <Badge variant="secondary" className="text-xs">
+              Filtro: {filterLabel} ({filteredBearings.length})
+            </Badge>
+          </div>
           <div className="grid gap-4 grid-cols-1">
-            {[...visibleBearings]
-              .map((bearing) => (
+            {filteredBearings.map((bearing) => (
               <BearingCard
                 key={bearing.id}
                 name={bearing.name}
@@ -321,6 +383,13 @@ export function BearingDashboard() {
                 rulDecayPerBatch={RUL_MULTIPLIER_DECAY_PER_BATCH}
               />
             ))}
+            {filteredBearings.length === 0 && (
+              <Card>
+                <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                  No hay rodamientos en estado {filterLabel.toLowerCase()} para los lotes visibles.
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       )}
